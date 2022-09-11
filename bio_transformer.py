@@ -329,3 +329,9 @@ def translate(model: torch.nn.Module, src_sentence: str):
 
 test = "KWKFLEHKGPVFAPPYEPLPENVKFYYDGKVMKLSPKAEEVATFFAKMLDHE-YTTKEIFRKNFFKDWRKEMTNEE-----------KNIITNLSKCDFTQMSQYFKA----QTEARKQMSKEEKLKIKEENEKLLKEYGFCIMDNHKERIANFKIEPPGLFRGRGNHPKMGMLKRRIMPEDIIINCSKDAKVPSPPP----GHKWKEVRHDNKVTWLVSWTENIQ-GSIKYIMLN"
 print(translate(transformer, test))
+
+test = "PIDVAIVPLTDP--RVEAREYAQKLLNALLANG-IRVLYDDRE---RKIGKKFREADLRGVPFAVVVGEDELE---------NGKVTVKSRDTGESETLHVDELPEFLV"
+print(translate(transformer, test))
+
+test = "KCGFLVKKGHI-------------------------------------RHNWKMRWFVLHN------------SRLEYYQTPTD---------------------------------------------------------------------TEPVNVIPLDG-------------------CRVDTHPYDKR------------------------KRRYIFCLTTAA-------------------------GLEYRFHASNR-----------DEMMAWTQAI"
+print(translate(transformer, test))
