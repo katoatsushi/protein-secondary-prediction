@@ -3,24 +3,34 @@ from torchtext.vocab import build_vocab_from_iterator
 from typing import Iterable, List
 import csv
 import tqdm
+import random
+from torch.nn.utils.rnn import pad_sequence
+from torch import Tensor
+import torch
+import torch.nn as nn
+from torch.nn import Transformer
+import math
 
 SRC_LANGUAGE = 'amino'
 TGT_LANGUAGE = 'structure'
 
-path = '../../DATA/main.csv'
-import csv
+path = '../DATA/main_without_gap.csv'
 f = open(path,'r',encoding="utf-8")
 train_rows = csv.reader(f)
 train_rows = list(train_rows)
 
-TRAIN_DATA = train_rowsTRAIN_DATA = train_rows[:3000]
-TEST_DATA = train_rows[1000:2000]
+# TRAIN_DATA = train_rows[:100]
+SPLIT = 20000
+TRAIN_DATA = train_rows[:SPLIT]
+TEST_DATA = train_rows[SPLIT:]
+
 # Place-holders
 token_transform = {}
 vocab_transform = {}
 
 def get_tokenizer_of_amino_acid(data):
-    return list(data)
+    # return list(data)
+    return data.split(' ')
 
 def get_tokenizer_of_structure(data):
     return data.split(' ')
@@ -58,21 +68,16 @@ for ln in [SRC_LANGUAGE, TGT_LANGUAGE]:
 print(vocab_transform[SRC_LANGUAGE].get_stoi())
 print(vocab_transform[TGT_LANGUAGE].get_stoi())
 
-from torch import Tensor
-import torch
-import torch.nn as nn
-from torch.nn import Transformer
-import math
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # helper Module that adds positional encoding to the token embedding to introduce a notion of word order.
 class PositionalEncoding(nn.Module):
-    def __init__(self,
-                 emb_size: int,
-                 dropout: float,
-                 maxlen: int = 5000):
+    # def __init__(self, emb_size: int, dropout: float, maxlen: int = 5000):
+    #     super(PositionalEncoding, self).__init__()
+    #     den = torch.exp(- torch.arange(0, emb_size, 2)* math.log(10000) / emb_size)
+    def __init__(self, emb_size: int, dropout: float, maxlen: int = 1000):
         super(PositionalEncoding, self).__init__()
-        den = torch.exp(- torch.arange(0, emb_size, 2)* math.log(10000) / emb_size)
+        den = torch.exp(- torch.arange(0, emb_size, 2)* math.log(2000) / emb_size)
         pos = torch.arange(0, maxlen).reshape(maxlen, 1)
         pos_embedding = torch.zeros((maxlen, emb_size))
         pos_embedding[:, 0::2] = torch.sin(pos * den)
@@ -158,18 +163,19 @@ torch.manual_seed(0)
 SRC_VOCAB_SIZE = len(vocab_transform[SRC_LANGUAGE])
 TGT_VOCAB_SIZE = len(vocab_transform[TGT_LANGUAGE])
 # EMB_SIZE = 512
-EMB_SIZE = 16
+# EMB_SIZE = 16
+
+EMB_SIZE = 512
 NHEAD = 8
-# FFN_HID_DIM = 512
-FFN_HID_DIM = 16
+FFN_HID_DIM = 512
 # BATCH_SIZE = 128
 # タンパク質によって長さが全然違うから、BATCH_SIZEは細かく区切った方が良い？
-BATCH_SIZE = 32
-NUM_ENCODER_LAYERS = 3
-NUM_DECODER_LAYERS = 3
+# BATCH_SIZE = 4
+BATCH_SIZE = 128
+NUM_ENCODER_LAYERS = 10
+NUM_DECODER_LAYERS = 10
 
-transformer = Seq2SeqTransformer(NUM_ENCODER_LAYERS, NUM_DECODER_LAYERS, EMB_SIZE,
-                                 NHEAD, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE, FFN_HID_DIM)
+transformer = Seq2SeqTransformer(NUM_ENCODER_LAYERS, NUM_DECODER_LAYERS, EMB_SIZE, NHEAD, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE, FFN_HID_DIM)
 
 print(type(transformer))
 
@@ -182,8 +188,6 @@ transformer = transformer.to(DEVICE)
 loss_fn = torch.nn.CrossEntropyLoss(ignore_index=PAD_IDX)
 
 optimizer = torch.optim.Adam(transformer.parameters(), lr=0.0001, betas=(0.9, 0.98), eps=1e-9)
-
-from torch.nn.utils.rnn import pad_sequence
 
 # helper function to club together sequential operations
 def sequential_transforms(*transforms):
@@ -227,17 +231,6 @@ def train_epoch(model, optimizer):
     # 質問項目
     train_dataloader = DataLoader(TRAIN_DATA, batch_size=BATCH_SIZE, collate_fn=collate_fn)
     for src, tgt in tqdm.tqdm(train_dataloader):
-        # torch.Size([250, 16])
-        # src: torch.Size([250, 16])  len:  250
-        """
-            src: torch.Size([250, 16])
-            tgt: torch.Size([250, 16])
-            とか、
-            src: torch.Size([100, 16])
-            tgt: torch.Size([100, 16])
-            くらいまでには落としたい
-        """
-
         src = src.to(DEVICE)
         tgt = tgt.to(DEVICE)
 
@@ -284,7 +277,8 @@ def evaluate(model):
 
 from timeit import default_timer as timer
 # NUM_EPOCHS = 18
-NUM_EPOCHS = 10
+
+NUM_EPOCHS = 20
 print("fit start...")
 for epoch in range(1, NUM_EPOCHS+1):
     start_time = timer()
@@ -294,25 +288,30 @@ for epoch in range(1, NUM_EPOCHS+1):
     print((f"Epoch: {epoch}, Train loss: {train_loss:.3f}, Val loss: {val_loss:.3f}, "f"Epoch time = {(end_time - start_time):.3f}s"))
 
 
+def generate_square_subsequent_mask_a(sz):
+    mask = (torch.triu(torch.ones((sz, sz), device=DEVICE)) == 1).transpose(0, 1)
+    mask = mask.float().masked_fill(mask == 0, float(0.0)).masked_fill(mask == 1, float(0.0))
+    return mask
+
 # function to generate output sequence using greedy algorithm
 def greedy_decode(model, src, src_mask, max_len, start_symbol):
     src = src.to(DEVICE)
     src_mask = src_mask.to(DEVICE)
-
+    # print("src: ", src)
+    # print("src_mask: ", src_mask)
     memory = model.encode(src, src_mask)
+
     ys = torch.ones(1, 1).fill_(start_symbol).type(torch.long).to(DEVICE)
-    for i in range(max_len-1):
+    for i in tqdm.tqdm(range(max_len-1)):
         memory = memory.to(DEVICE)
-        tgt_mask = (generate_square_subsequent_mask(ys.size(0))
-                    .type(torch.bool)).to(DEVICE)
+        tgt_mask = (generate_square_subsequent_mask(ys.size(0)).type(torch.bool)).to(DEVICE)
         out = model.decode(ys, memory, tgt_mask)
         out = out.transpose(0, 1)
+        # out[:, -1]  => outの一番最後の行を取り出す
         prob = model.generator(out[:, -1])
         _, next_word = torch.max(prob, dim=1)
         next_word = next_word.item()
-
-        ys = torch.cat([ys,
-                        torch.ones(1, 1).type_as(src.data).fill_(next_word)], dim=0)
+        ys = torch.cat([ys, torch.ones(1, 1).type_as(src.data).fill_(next_word)], dim=0)
         if next_word == EOS_IDX:
             break
     return ys
@@ -323,15 +322,13 @@ def translate(model: torch.nn.Module, src_sentence: str):
     src = text_transform[SRC_LANGUAGE](src_sentence).view(-1, 1)
     num_tokens = src.shape[0]
     src_mask = (torch.zeros(num_tokens, num_tokens)).type(torch.bool)
-    tgt_tokens = greedy_decode(
-        model,  src, src_mask, max_len=num_tokens + 5, start_symbol=BOS_IDX).flatten()
-    return " ".join(vocab_transform[TGT_LANGUAGE].lookup_tokens(list(tgt_tokens.cpu().numpy()))).replace("<bos>", "").replace("<eos>", "")
+    tgt_tokens = greedy_decode(model,  src, src_mask, max_len=num_tokens + 5, start_symbol=BOS_IDX).flatten()
+    return "".join(vocab_transform[TGT_LANGUAGE].lookup_tokens(list(tgt_tokens.cpu().numpy()))).replace("<bos>", "").replace("<eos>", "")
 
-test = "KWKFLEHKGPVFAPPYEPLPENVKFYYDGKVMKLSPKAEEVATFFAKMLDHE-YTTKEIFRKNFFKDWRKEMTNEE-----------KNIITNLSKCDFTQMSQYFKA----QTEARKQMSKEEKLKIKEENEKLLKEYGFCIMDNHKERIANFKIEPPGLFRGRGNHPKMGMLKRRIMPEDIIINCSKDAKVPSPPP----GHKWKEVRHDNKVTWLVSWTENIQ-GSIKYIMLN"
-print(translate(transformer, test))
 
-test = "PIDVAIVPLTDP--RVEAREYAQKLLNALLANG-IRVLYDDRE---RKIGKKFREADLRGVPFAVVVGEDELE---------NGKVTVKSRDTGESETLHVDELPEFLV"
-print(translate(transformer, test))
-
-test = "KCGFLVKKGHI-------------------------------------RHNWKMRWFVLHN------------SRLEYYQTPTD---------------------------------------------------------------------TEPVNVIPLDG-------------------CRVDTHPYDKR------------------------KRRYIFCLTTAA-------------------------GLEYRFHASNR-----------DEMMAWTQAI"
-print(translate(transformer, test))
+for test in TEST_DATA:
+    test_input = test[0]
+    res = translate(transformer, test[0])
+    print("正解", "".join(test_input))
+    print("実際", res)
+    print()
